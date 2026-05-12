@@ -10,7 +10,7 @@ request = {
     "product_type": ["monthly_averaged_reanalysis"],
     "variable": data_var,
     "pressure_level": [
-        "250", 
+        "200", 
         "850",
     ],
     "year": [
