@@ -95,7 +95,7 @@ class CMIP6_READER:
     def get_data(self,member_id):
             files = sorted(glob.glob(f'{self.input_directory}/*/*/*/{self.source_id}/{self.experiment_id}/{member_id}/{self.table_id}/{self.var}/*/*/*nc'))
 
-            ds = xr.open_mfdataset(files,combine='nested',concat_dim='time').drop_duplicates('time').sel(time=slice('1979-01-01','2020-12-31'))
+            ds = xr.open_mfdataset(files,combine='nested',concat_dim='time').drop_duplicates('time')
             if 'plev' in list(ds.coords.keys()) and self.plev is not None:
                 # ds = ds.assign_coords({'plev': self.ds_out['plev'].values})
                 # if :
@@ -168,7 +168,7 @@ class CMIP6_READER:
             if self.plev == None:
                 fname = f'{self.output_directory}/{self.var}_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
             else:
-                fname = f'{self.output_directory}/{self.var}_{self.plev/100:.0f}mb_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
+                fname = f'{self.output_directory}/{self.var}_{self.plev/100}_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
             index.to_netcdf(fname,mode='w')
             print('Written to:',fname)
             return index
@@ -181,10 +181,11 @@ def get_source_ids(var,experiment_id,table_id,input_directory,source_id='None'):
     source_ids = []
     member_ids = []
 
-    print(input_directory)
     if '.esgf' not in input_directory:
-        files = sorted(glob.glob(f'{input_directory}/{var}*nc'))
-
+        if source_id == 'None':
+            files = sorted(glob.glob(f'{input_directory}/{var}*nc'))
+        else:
+            files = sorted(glob.glob(f'{input_directory}/{var}*nc'))
         for f in files:
             if 'interp' in f or 'extend' in f:
                 source_ids.append(f.split('/')[-1].split('_')[-3])
@@ -196,10 +197,8 @@ def get_source_ids(var,experiment_id,table_id,input_directory,source_id='None'):
         else:
             files = sorted(glob.glob(f'{input_directory}/*/*/*/{source_id}/{experiment_id}/*/{table_id}/{var}/*/*/*nc'))
 
-        for f in files:
-            source_ids.append(f.split('/')[-1].split('_')[2])
-            member_ids.append(f.split('/')[-1].split('_')[4])
-    
+        source_ids.append(f.split('/')[-1].split('_')[2])
+        member_ids.append(f.split('/')[-1].split('_')[4])
     print(files[0])
     print(source_ids,member_ids)
 
@@ -210,7 +209,7 @@ if __name__=="__main__":
     # Make changes here
     #=========================================================================
     # Experiment you want to regrid and standardize
-    EXPERIMENT_IDS = ['hist-aer', 'hist-GHG', 'hist-nat']
+    EXPERIMENT_ID = 'hist-aer'
     
     # Frequency of outputs Amon, day
     TABLE_ID = 'Amon'
@@ -219,7 +218,7 @@ if __name__=="__main__":
     DATA_VARS = ['ua']
     
     # If you want one level
-    PLEV = 85000 # Set to None if using surface variable
+    PLEV = 25000 # Set to None if using surface variable
 
     # File with grid template. Could manually make the trend below
     GRID_DIR = '/project/tas1/'
@@ -253,23 +252,22 @@ if __name__=="__main__":
         }
     )
 
-    for exp in EXPERIMENT_IDS:
-        for var in DATA_VARS:
-            source_ids,_ = get_source_ids(var,exp,TABLE_ID,INPUT_DIR)
-            output_directory = f'{OUTPUT_DIR}/{exp}/{resolution}/{var}/'
-            print(output_directory)
+    for var in DATA_VARS:
+        source_ids,_ = get_source_ids(var,EXPERIMENT_ID,TABLE_ID,INPUT_DIR)
+        output_directory = f'{OUTPUT_DIR}/{EXPERIMENT_ID}/{resolution}/{var}/'
+        print(output_directory)
 
-            if not os.path.exists(output_directory):
-                os.makedirs(output_directory)
+        if not os.path.exists(output_directory):
+            os.makedirs(output_directory)
 
-            out_files = sorted(glob.glob(f'{output_directory}/*nc'))
-            finished = [f.split('/')[-1].split('_')[3] for f in out_files if f"{PLEV/100:.0f}" in f]
-            #finished = []
-            #source_ids = ['CESM2']
-            print(source_ids)
-            print('Finished:',finished)
+        out_files = sorted(glob.glob(f'{output_directory}/*nc'))
+        finished = [f.split('/')[-1].split('_')[2] for f in out_files]
+        #finished = []
+        #source_ids = ['CESM2']
+        print(source_ids)
+        print('Finished:',finished)
 
-            for source_id in source_ids[:]:
-                if source_id not in finished:
-                    print(source_id)
-                    CMIP6_READER(var,source_id,exp,TABLE_ID,ds_out,INPUT_DIR,output_directory,plev=PLEV).process()
+        for source_id in source_ids[:]:
+            if source_id not in finished:
+                print(source_id)
+                CMIP6_READER(var,source_id,EXPERIMENT_ID,TABLE_ID,ds_out,INPUT_DIR,output_directory,plev=PLEV).process()
