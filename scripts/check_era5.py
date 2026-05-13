@@ -3,8 +3,8 @@ import xarray as xr
 import numpy as np
 
 import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
+# import cartopy.crs as ccrs
+# import cartopy.feature as cfeature
 import os
 import glob as glob
 from scipy import stats 
@@ -77,6 +77,11 @@ damip_nat_uwind_2_5deg = xr.open_mfdataset(glob.glob('/project/tas1/itbaxter/for
     combine='nested',concat_dim='member_id')
 
 # %%
+# Still processing
+# damip_hist_uwind_2_5deg = xr.open_mfdataset(glob.glob('/project/tas1/itbaxter/for-tiffany/IPCC_figures/lesfmip_figures/raw_data/historical/71x144/ua/ua_200mb*nc'),
+#     combine='nested',concat_dim='member_id')
+
+# %%
 era5_eswj_1deg = area_weighted_ave(jja(era5_uwind_1deg.sel(lat=slice(35,45), lon=slice(30, 120))))
 era5_eswj_n96 = area_weighted_ave(jja(era5_uwind_n96.sel(lat=slice(35,45), lon=slice(30, 120))))
 era5_eswj_2_5deg = area_weighted_ave(jja(era5_uwind_2_5deg.sel(lat=slice(35,45), lon=slice(30, 120))))
@@ -124,7 +129,7 @@ ax.set_ylim([-6,6])
 ax.minorticks_on()
 ax.legend(frameon=False, ncols=3, fontsize=8)
 ax.axhline(0, c='silver', ls='--', lw=0.6)
-ax.set_title('Zonal wind over(35N-45N, 30E-120E) at 200 hPa')
+ax.set_title('Zonal wind over (35N-45N, 30E-120E) at 200 hPa')
 ax.text(-0.07, 1.0, "a", fontsize=16, transform=ax.transAxes)
 
 ax = fig.add_subplot(gs[0, 1])

@@ -38,7 +38,6 @@ def compute_trend_ols(da_y, da_x=None, dim='time', verbose=False):
 
     return xr.Dataset({'slope': slope, 'p_value': p_value, 'intercept': intercept, 'predicted': predicted})
 
-
 def jja(da):
     return da.where(da['time.month'].isin([6, 7, 8]), drop=True).groupby('time.year').mean('time')
 
