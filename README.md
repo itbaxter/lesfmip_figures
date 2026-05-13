@@ -6,3 +6,5 @@
 
 - Bottom row:
     - from: Human influence on recent trends in extratropical low-level wind speed by Chou et al. (2025) [https://doi.org/10.1038/s41612-025-01292-6](https://www.nature.com/articles/s41612-025-01292-6)
+
+To create environment run ```conda env create -f environment.yml --prefix={path_to_env}```
