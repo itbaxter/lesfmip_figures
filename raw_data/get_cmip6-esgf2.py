@@ -45,11 +45,6 @@ def print_memory_usage(stage):
     return memory_gb
 
 # %%
-def remove_leap_years(ds):
-    """Remove leap years (Feb 29) from xarray dataset."""
-    return ds.sel(time=~((ds.time.dt.month == 2) & (ds.time.dt.day == 29)))
-
-# %%
 def setup_logger(output_directory, log_filename='cmip6_processing.log'):
     """
     Set up logging to both file and console.
@@ -66,6 +61,9 @@ def setup_logger(output_directory, log_filename='cmip6_processing.log'):
     logger : logging.Logger
         Configured logger instance
     """
+    # Ensure the output directory exists before creating handlers.
+    os.makedirs(output_directory, exist_ok=True)
+
     # Create logger
     logger = logging.getLogger('CMIP6_Processing')
     logger.setLevel(logging.INFO)
@@ -113,10 +111,15 @@ class CMIP6_ESGF_READER:
         self.cat = intake_esgf.ESGFCatalog()
         try:
             self.local_cache = intake_esgf.conf.get("local_cache")
+            if '~/' in self.local_cache:
+                print('Putting data in home directory!!!!!!')
+                exit() 
             # Ensure local_cache is a string, not a list
-            if isinstance(self.local_cache, list):
-                self.local_cache = self.local_cache[0] if self.local_cache else None
+            #if isinstance(self.local_cache, list):
+            #    self.local_cache = self.local_cache[0] if self.local_cache else None
+            print(f"Local cache for ESGF: {self.local_cache}")
         except Exception:
+            print("Local cache is None")
             self.local_cache = None
 
     def print_memory_usage(self, stage):
@@ -194,78 +197,6 @@ class CMIP6_ESGF_READER:
             print(f"Error in get_data_opendap: {e}")
             return None
 
-    def format(self, ds):
-        """Format the dataset with consistent dimensions and coordinates."""
-        # Add member_id if not present
-        if 'member_id' not in ds.dims:
-            ds = ds.expand_dims('member_id')
-            ds['member_id'] = ('member_id', [ds.attrs.get('member_id', self.member_id)])
-
-        # Update member_id coordinate
-        ds.coords['member_id'] = ('member_id', [f'{self.source_id}_{member.values}'
-                                               for member in ds["member_id"]])
-
-        # Add height coordinates for specific variables
-        if self.var in ['tas', 'huss']:
-            ds.coords['height'] = 2.0
-        elif self.var in ['uas', 'vas']:
-            ds.coords['height'] = 10.0
-
-        # Clean up coordinates
-        coords_to_drop = ['source_id', 'time_bnds', 'time_bounds', 'dcpp_init_year']
-        for coord in coords_to_drop:
-            if coord in ds.coords:
-                ds = ds.drop_vars(coord)
-
-        # Add bnds coordinate if not present
-        if 'bnds' not in ds.coords:
-            ds.coords['bnds'] = [1.0, 2.0]
-
-        return ds
-
-    def add_lat_lon_bounds(self, ds, lat_name='lat', lon_name='lon'):
-        """Add latitude and longitude bounds for conservative regridding."""
-        # Get latitude and longitude coordinates
-
-        lat = [dim for dim in ds.dims if 'lat' in dim][0]
-        lon = [dim for dim in ds.dims if 'lon' in dim][0]
-
-        # Calculate latitude bounds
-        lat_diff = np.diff(lat) / 2.0
-        lat_bnds = np.empty((lat.size, 2), dtype=np.float64)
-        lat_bnds[:, 0] = lat - np.concatenate(([lat_diff[0]], lat_diff))
-        lat_bnds[:, 1] = lat + np.concatenate((lat_diff, [lat_diff[-1]]))
-
-        # Calculate longitude bounds
-        lon_diff = np.diff(lon) / 2.0
-        lon_bnds = np.empty((lon.size, 2), dtype=np.float64)
-        lon_bnds[:, 0] = lon - np.concatenate(([lon_diff[0]], lon_diff))
-        lon_bnds[:, 1] = lon + np.concatenate((lon_diff, [lon_diff[-1]]))
-
-        # Add bounds to dataset
-        ds.coords['lat_bnds'] = (('lat', 'bnds'), lat_bnds)
-        ds.coords['lon_bnds'] = (('lon', 'bnds'), lon_bnds)
-
-        return ds
-
-    def regrid(self, ds):
-        """Regrid dataset to target grid with memory management."""
-        if 'lat_bnds' not in ds.coords:
-            ds = self.add_lat_lon_bounds(ds)
-
-        # Create regridder with cleanup option
-        regridder = xe.Regridder(ds, self.ds_out, "conservative")
-        
-        # Apply regridding and immediately clean up regridder
-        dr_out = regridder(ds, keep_attrs=True)
-        
-        # Clean up regridder to free memory
-        #regridder.clean_weight_file()
-        del regridder
-        gc.collect()
-
-        return dr_out
-
     def add_labels(self, ds, member_id):
         """Add member_id labels to the dataset."""
         # Add member_id if not present
@@ -277,13 +208,6 @@ class CMIP6_ESGF_READER:
         ds.coords['member_id'] = ('member_id', [f'{self.source_id}_{member_id}'])
         
         return ds
-
-    def convert_longitude(self, ds):
-        """Convert longitude from [0, 360] to [-180, 180]."""
-        lon = ds['lon']
-        converted_lon = (lon + 180) % 360 - 180
-        ds.coords['lon'] = converted_lon
-        return ds.sortby('lon')
 
     def process(self):
         """Main processing function using the specified approach."""
@@ -566,7 +490,8 @@ def print_availability_summary(available_models, variables, experiment_ids):
 
 def batch_process_cmip6_with_availability_check(variables, experiment_ids, output_base_dir, 
                                                target_grid=None, table_id='Amon', 
-                                               grid_label='gn', min_experiments=1,
+                                               grid_label='gn', 
+                                               min_experiments=1,
                                                specific_models=None):
     """
     Batch process CMIP6 datasets with automatic availability checking.
@@ -639,10 +564,7 @@ def batch_process_cmip6_with_availability_check(variables, experiment_ids, outpu
             print(f"Processing {len(process_models)} models for {var}")
             
             # Create output directory
-            output_directory = f'{output_base_dir}/{experiment_id}/{resolution}/{var}/{table_id}'
-            if not os.path.exists(output_directory):
-                os.makedirs(output_directory)
-                print(f"Directory '{output_directory}' created.")
+            output_directory = f'{output_base_dir}/.logs'
             
             # Set up logger for this experiment/variable combination
             log_filename = f'cmip6_processing_{experiment_id}_{var}_{table_id}.log'
@@ -716,18 +638,19 @@ if __name__ == "__main__":
     #===========================================================================
     # Modify these parameters as needed for your specific use case 
     #===========================================================================
-    TARGET_GRID = glob.glob('/project/tas1/itbaxter/for-tiffany/amip/180x360/ta/Amon/*nc')[0]
+    TARGET_GRID = glob.glob('./hist-aer/71x144/ua/*nc')[0]
 
     # Define variables and experiments
-    DATA_VARS = ['ua', 'va'] #,'pr','huss']
-    EXPERIMENT_IDS = ['DAMIP'] #,'ssp585','amip']
+    DATA_VARS = ['ua'] #,'pr','huss']
+    EXPERIMENT_IDS = ['hist-GHG', 'hist-aer', 'hist-nat', 'hist-stratO3','historical','ssp585'] #,'ssp585','amip']
     TABLE_ID = 'Amon'
-    OUTPUT_BASE_DIR = 'project/tas1/itbaxter/for-tiffany/'
+    OUTPUT_BASE_DIR = '/project/tas1/itbaxter/for-tiffany/IPCC_figures/lesfmip_figures/raw_data/'
 
     #===========================================================================
-    # 
+    # Can pick Option depending on what you want. 
     #===========================================================================
 
+    # Best to change in the ~/.config/intake-esgf/conf.yaml
     os.environ['ESGF_PERSISTENT_CACHE'] = f'{OUTPUT_BASE_DIR}/.esgf'
 
     # Option 1: Check availability and use all available models
@@ -740,14 +663,14 @@ if __name__ == "__main__":
     #)
     
     # Option 2: Check availability but only process specific models
-    preferred_models = ['CESM2'] #,'CESM2','GISS-E2-1-G', 'CanESM5','ACCESS-CM2''ACCESS-ESM1-5','FGOALS-g3','HadGEM3-GC31-LL','MIROC6','MRI-ESM2-0','NorESM2-LM']
+    preferred_models = ['ACCESS-ESM1-5'] #,'CESM2','GISS-E2-1-G', 'CanESM5','ACCESS-CM2''ACCESS-ESM1-5','FGOALS-g3','HadGEM3-GC31-LL','MIROC6','MRI-ESM2-0','NorESM2-LM']
     batch_process_cmip6_with_availability_check(
         variables=DATA_VARS,
         experiment_ids=EXPERIMENT_IDS,
         table_id=TABLE_ID,
         target_grid=TARGET_GRID,
         output_base_dir=OUTPUT_BASE_DIR,
-        #specific_models=preferred_models,
+        specific_models=preferred_models,
         min_experiments=1  # Allow models from at least one experiment
     )
     

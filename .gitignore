@@ -1,3 +1,9 @@
 raw_data/*/*nc
 data/
 CASanalysis/
+raw_data/.esgf/
+scripts/utils/__pycache__/
+raw_data/.logs/
+raw_data/hist*
+raw_data/ssp*
+raw_data/Reanalysis

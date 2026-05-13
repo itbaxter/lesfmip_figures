@@ -15,7 +15,7 @@ def print_memory_usage(stage):
 
 
 class CMIP6_READER:
-    def __init__(self,var,source_id,experiment_id,table_id,ds_out, input_directory, output_directory):
+    def __init__(self,var,source_id,experiment_id,table_id,ds_out, input_directory, output_directory, method='conservative', plev=None):
         self.var = var
         self.source_id = source_id
         self.experiment_id = experiment_id
@@ -23,6 +23,8 @@ class CMIP6_READER:
         self.ds_out = ds_out
         self.input_directory = input_directory
         self.output_directory = output_directory
+        self.method = method
+        self.plev = plev
         print_memory_usage("Initial")
 
     def add_lat_lon_bounds(self, ds, lat_name='lat', lon_name='lon'):
@@ -81,7 +83,7 @@ class CMIP6_READER:
             ds = self.add_lat_lon_bounds(ds)
         
         # Perform regridding
-        regridder = xe.Regridder(ds, self.ds_out, "conservative", periodic=True)
+        regridder = xe.Regridder(ds, self.ds_out, self.method, periodic=True)
         dr_out = regridder(ds, keep_attrs=True)
         
         # If input was DataArray, convert back to DataArray
@@ -93,9 +95,11 @@ class CMIP6_READER:
     def get_data(self,member_id):
             files = sorted(glob.glob(f'{self.input_directory}/*/*/*/{self.source_id}/{self.experiment_id}/{member_id}/{self.table_id}/{self.var}/*/*/*nc'))
 
-            ds = xr.open_mfdataset(files,combine='nested',concat_dim='time').drop_duplicates('time')
-            if 'plev' in list(ds.coords.keys()):
-                ds = ds.assign_coords({'plev': self.ds_out['plev'].values})
+            ds = xr.open_mfdataset(files,combine='nested',concat_dim='time').drop_duplicates('time').sel(time=slice('1979-01-01','2020-12-31'))
+            if 'plev' in list(ds.coords.keys()) and self.plev is not None:
+                # ds = ds.assign_coords({'plev': self.ds_out['plev'].values})
+                # if :
+                ds = ds.sel(plev=self.plev, method='nearest')
             ds.close()
             return ds
 
@@ -107,9 +111,9 @@ class CMIP6_READER:
         ds.coords['member_id'] = ('member_id', [f'{self.source_id}_{member.values}' for member in ds["member_id"]])
         
         # Add height as attribute instead of coordinate to avoid dimension issues
-        if var == 'tas' or var == 'huss':
+        if self.var == 'tas' or self.var == 'huss':
             ds.attrs['height'] = 2.0
-        elif var == 'uas' or var == 'vas':
+        elif self.var == 'uas' or self.var == 'vas':
             ds.attrs['height'] = 10.0
         if 'source_id' in list(ds.coords.keys()):
             ds = ds.drop_vars('source_id')
@@ -121,115 +125,15 @@ class CMIP6_READER:
             ds = ds.drop_vars('time_bounds')
         if 'dcpp_init_year' in list(ds.coords.keys()):
             ds = ds.drop_vars('dcpp_init_year')
-        #if 'plev' in list(ds.coords.keys()):
-        #    ds = ds.drop_vars('plev')
         return ds
-
-
-    def process(self):
-        # Process member by member to save memory
-        directories = sorted(glob.glob(f'{self.input_directory}/*/*/*/{self.source_id}/{self.experiment_id}/*'))  
-
-        members = [d.split('/')[-1] for d in directories]
-
-        try:
-            temp_files = []
-            data = []
-
-            for member in members[:]:
-                ds_member = self.get_data(member_id=member)
-
-                # Ensure member_id is a dimension
-                if 'member_id' not in ds_member.dims:
-                    ds_member = ds_member.expand_dims('member_id')
-                    ds_member.coords["member_id"] = ('member_id', [f'{ds_member.attrs["source_id"]}_{ds_member.attrs["variant_label"]}'])
-                    
-                # Only assign lat_bnds and nbnd if they exist in data_vars (not as coordinates)
-                coords_to_assign = {}
-                if 'lat_bnds' in ds_member.data_vars:
-                    coords_to_assign['lat_bnds'] = ds_member['lat_bnds']
-                if 'nbnd' in ds_member.data_vars:
-                    coords_to_assign['nbnd'] = ds_member['nbnd']
-                if coords_to_assign:
-                    ds_member = ds_member.assign_coords(coords_to_assign)
-                
-                print(ds_member[self.var])
-
-                index = self.regrid(ds_member.squeeze()).sortby('time')
-
-                yrstart = index['time.year'][0].values
-                yrend = index['time.year'][-1].values
-
-                # Verify time dimension length before creating new coordinate
-                time_length = len(index['time']) if 'time' in index.dims else index.dims.get('time', 0)
-                time_range = xr.date_range(start=f'{yrstart}-01-01', periods=time_length, freq='MS', use_cftime=True)
-                index = index.assign_coords(time=time_range)
-                #if self.experiment_id == 'amip':
-                index = index.sel(time=slice('1979-01-01','2014-12-31'))
-
-                if index.time.size == 0:
-                   continue
-
-                index = self.format(index)
-
-                # Use a sanitized member_id for the filename
-                safe_member_id = str(member).replace('/', '_')
-                temp_fname = f'{self.output_directory}/temp_{self.var}_{self.source_id}_{self.experiment_id}_{safe_member_id}.nc'
-                index.to_netcdf(temp_fname, mode='w')
-                print('Written to:',temp_fname)
-                temp_files.append(temp_fname)
-                data.append(index)
-                del ds_member
-                del index
-                gc.collect()
-                print_memory_usage(safe_member_id)
-
-            # Combine member files
-            combined_ds = xr.concat(data,dim='member_id')
-            del data
-
-            # Get start and end year from combined data for the final filename
-            final_yrstart = combined_ds['time.year'].min().values
-            final_yrend = combined_ds['time.year'].max().values
-
-            fname = f'{self.output_directory}/{self.var}_CMIP6_{self.source_id}_Amon_{self.experiment_id}_{final_yrstart}-{final_yrend}.nc'
-
-            # Define encoding for compression
-            encoding = {v: {'zlib': True, 'complevel': 5} for v in combined_ds.data_vars}
-
-            # Write to netcdf using dask for memory efficiency
-            write_job = combined_ds.to_netcdf(
-                fname,
-                mode='w',
-                unlimited_dims=['member_id'],
-                compute=False,
-                encoding=encoding,
-                engine='h5netcdf'
-            )
-            write_job.compute()
-
-            print('Saved to:',f'{fname}')
-
-            # Clean up temporary files
-            #for f in temp_files:
-            #    os.remove(f)
-
-            del ds
-            del combined_ds
-
-            gc.collect()
-        except Exception as e:
-            # Print the error message
-            print(f"An error occurred: {e}")
 
     def process(self):
         try:
             files = sorted(glob.glob(f'{self.input_directory}/*/*/*/{self.source_id}/{self.experiment_id}/*/{self.table_id}/{self.var}/*/*/*nc'))
-            member_ids = np.unique([f.split('/')[11] for f in files])
+            member_ids = np.unique([f.split('/')[-6] for f in files])
             print([m for m in member_ids],len(member_ids))
             if len(member_ids) > 1:
                 ds = [self.get_data(member_id) for member_id in member_ids[:]]
-                print('Here 2')
                 ds = xr.concat(ds,dim='member_id')
                 # Clean up individual datasets
                 gc.collect()
@@ -255,19 +159,16 @@ class CMIP6_READER:
             # Now safely assign member_id coordinate (dimension already exists)
             index.coords['member_id'] = ('member_id', [f'{self.source_id}_{member}' for member in member_ids])
             print(index)
-
-            # Add height as a scalar coordinate (0-D)
-            if var == 'tas':
-                index.attrs['height'] = 2.0
-            elif var in ['uas', 'vas']:
-                index.attrs['height'] = 10.0
                 
             if 'time_bnds' in list(ds.coords.keys()):
                 index = index.drop_vars('time_bnds')
             if 'time_bounds' in list(ds.coords.keys()):
                 index = index.drop_vars('time_bounds')
             print_memory_usage("writing out files")
-            fname = f'{self.output_directory}/{self.var}_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
+            if self.plev == None:
+                fname = f'{self.output_directory}/{self.var}_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
+            else:
+                fname = f'{self.output_directory}/{self.var}_{self.plev/100:.0f}mb_CMIP6_{self.source_id}_{self.table_id}_{self.experiment_id}_{yrstart}-{yrend}.nc'
             index.to_netcdf(fname,mode='w')
             print('Written to:',fname)
             return index
@@ -277,16 +178,28 @@ class CMIP6_READER:
 
 
 def get_source_ids(var,experiment_id,table_id,input_directory,source_id='None'):
-    if source_id == 'None':
-        files = sorted(glob.glob(f'{input_directory}/*/*/*/*/{experiment_id}/*/{table_id}/{var}/*/*/*nc'))
-    else:
-        files = sorted(glob.glob(f'{input_directory}/*/*/*/{source_id}/{experiment_id}/*/{table_id}/{var}/*/*/*nc'))
-
     source_ids = []
     member_ids = []
-    for f in files:
-        source_ids.append(f.split('/')[9])
-        member_ids.append(f.split('/')[11])
+
+    print(input_directory)
+    if '.esgf' not in input_directory:
+        files = sorted(glob.glob(f'{input_directory}/{var}*nc'))
+
+        for f in files:
+            if 'interp' in f or 'extend' in f:
+                source_ids.append(f.split('/')[-1].split('_')[-3])
+                member_ids.append(f.split('/')[-1].split('_')[-2])
+
+    else:
+        if source_id == 'None':
+            files = sorted(glob.glob(f'{input_directory}/*/*/*/*/{experiment_id}/*/{table_id}/{var}/*/*/*nc'))
+        else:
+            files = sorted(glob.glob(f'{input_directory}/*/*/*/{source_id}/{experiment_id}/*/{table_id}/{var}/*/*/*nc'))
+
+        for f in files:
+            source_ids.append(f.split('/')[-1].split('_')[2])
+            member_ids.append(f.split('/')[-1].split('_')[4])
+    
     print(files[0])
     print(source_ids,member_ids)
 
@@ -297,24 +210,31 @@ if __name__=="__main__":
     # Make changes here
     #=========================================================================
     # Experiment you want to regrid and standardize
-    EXPERIMENT_ID = 'hist-aer'
+    EXPERIMENT_IDS = ['hist-aer', 'hist-GHG', 'hist-nat']
+    
     # Frequency of outputs Amon, day
     TABLE_ID = 'Amon'
+    
     # Variable to regrid
     DATA_VARS = ['ua']
+    
+    # If you want one level
+    PLEV = 85000 # Set to None if using surface variable
+
     # File with grid template. Could manually make the trend below
-    GRID_DIR = '/project/tas1/itbaxter/for-tiffany/amip/180x360/ta/Amon/'
+    GRID_DIR = '/project/tas1/'
+    
+    # Output directory for regridded files. Will be organized by experiment_id/resolution/var/*source_id*nc
+    OUTPUT_DIR = '/project/tas1/itbaxter/for-tiffany/IPCC_figures/lesfmip_figures/raw_data/'
+    
     # Input directory for ESGF files. Should be organized as */source_id/experiment_id/member_id/table_id/var/*nc
     # NOTE: This points to your .esgf directory, so assumes you downloaded the data using get_cmip6-esgf2.py. Use process_local.py if you have the data organized differently on your system.
-    INPUT_DIR = '/project/tas1/itbaxter/for-tiffany/.esgf/'
-
-    # Output directory for regridded files. Will be organized by experiment_id/resolution/var/*source_id*nc
-    OUTPUT_DIR = '/project/tas1/itbaxter/for-tiffany/'
+    INPUT_DIR = f'{OUTPUT_DIR}/.esgf/'
 
     #=========================================================================
     # Shouldn't need to change these but you could
     #=========================================================================
-    files = sorted(glob.glob(f'{GRID_DIR}/*nc'))
+    files = sorted(glob.glob(f'{GRID_DIR}/pr*nc'))
     grid = xr.open_dataset(files[0])
 
     print(list(grid.dims))
@@ -330,26 +250,26 @@ if __name__=="__main__":
         {
             "lat": (["lat"], grid[dim1].data, {"units": "degrees_north"}),
             "lon": (["lon"], grid[dim2].data, {"units": "degrees_east"}),
-            "plev": (["plev"], grid['plev'].data, {"units": "Pa"}), 
         }
     )
 
-    for var in DATA_VARS:
-        source_ids,_ = get_source_ids(var,EXPERIMENT_ID,TABLE_ID,INPUT_DIR)
-        output_directory = f'{OUTPUT_DIR}/{EXPERIMENT_ID}/{resolution}/{var}/'
-        print(output_directory)
+    for exp in EXPERIMENT_IDS:
+        for var in DATA_VARS:
+            source_ids,_ = get_source_ids(var,exp,TABLE_ID,INPUT_DIR)
+            output_directory = f'{OUTPUT_DIR}/{exp}/{resolution}/{var}/'
+            print(output_directory)
 
-        if not os.path.exists(output_directory):
-            os.makedirs(output_directory)
+            if not os.path.exists(output_directory):
+                os.makedirs(output_directory)
 
-        out_files = sorted(glob.glob(f'{output_directory}/*nc'))
-        finished = [f.split('/')[-1].split('_')[2] for f in out_files]
-        #finished = []
-        #source_ids = ['CESM2']
-        print(source_ids)
-        print('Finished:',finished)
+            out_files = sorted(glob.glob(f'{output_directory}/*nc'))
+            finished = [f.split('/')[-1].split('_')[3] for f in out_files if f"{PLEV/100:.0f}" in f]
+            #finished = []
+            #source_ids = ['CESM2']
+            print(source_ids)
+            print('Finished:',finished)
 
-        for source_id in source_ids[:]:
-            if source_id not in finished:
-                print(source_id)
-                CMIP6_READER(var,source_id,EXPERIMENT_ID,TABLE_ID,ds_out,output_directory).process()
+            for source_id in source_ids[:]:
+                if source_id not in finished:
+                    print(source_id)
+                    CMIP6_READER(var,source_id,exp,TABLE_ID,ds_out,INPUT_DIR,output_directory,plev=PLEV).process()

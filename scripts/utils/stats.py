@@ -11,6 +11,7 @@ import xarray as xr
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+from scipy.stats import linregress as _linregress
     
 def compute_trend_ols(da_y, da_x=None, dim='time', verbose=False):
     if da_x is None:
@@ -51,7 +52,6 @@ def area_weighted_ave(ds):
     # return ds.sum(('lat','lon'),skipna=True)/((ds/ds)*coslat).sum(('lat','lon'),skipna=True)
     return ds.weighted(coslat).mean(('lat','lon'),skipna=True)
 
-from scipy.stats import linregress as _linregress
 def linregress(da_y, da_x, dim=None):
     '''xarray-wrapped function of scipy.stats.linregress.
     Note the order of the input arguments x, y is reversed to the original scipy function.'''
